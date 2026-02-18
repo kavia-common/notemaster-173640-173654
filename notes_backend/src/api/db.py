@@ -21,19 +21,49 @@ def _dict_factory(cursor: sqlite3.Cursor, row: Tuple[Any, ...]) -> Dict[str, Any
     return {col[0]: row[idx] for idx, col in enumerate(cursor.description)}
 
 
+def _normalize_sqlite_db_value(value: str) -> str:
+    """Normalize SQLITE_DB values to a filesystem path suitable for sqlite3.connect().
+
+    notes_database/db_connection.txt and some tooling may provide SQLITE_DB as either:
+    - a plain path (absolute or relative): /path/to/myapp.db or myapp.db
+    - a sqlite URL: sqlite:////path/to/myapp.db or sqlite:///relative.db
+
+    Args:
+        value: Raw SQLITE_DB environment variable value.
+
+    Returns:
+        Filesystem path to the sqlite database file.
+    """
+    raw = (value or "").strip()
+    if not raw:
+        return "myapp.db"
+
+    # Accept URI-like values but normalize to a path for stdlib sqlite3.
+    if raw.startswith("sqlite:///"):
+        # sqlite:////abs/path => /abs/path
+        # sqlite:///rel/path => rel/path
+        return raw[len("sqlite:///") :]
+
+    return raw
+
+
 # PUBLIC_INTERFACE
 def get_db_path() -> str:
     """Return the configured SQLite database file path.
 
     Uses env var SQLITE_DB (as defined by the notes_database container). If unset,
-    we fall back to a local DB file in the backend container (useful for local dev),
-    but production should always set SQLITE_DB.
+    we fall back to a local DB file in the backend container (useful for local dev).
+
+    Important:
+        In preview/runtime environments, SQLITE_DB should be set to the DB file
+        created by the notes_database container. This backend also tolerates
+        sqlite URL formats (sqlite:///...) and normalizes them to a path.
 
     Returns:
         Absolute or relative path to the SQLite DB file.
     """
     # NOTE: Orchestrator should set SQLITE_DB in notes_backend .env. Do not hardcode.
-    return os.getenv("SQLITE_DB", "myapp.db")
+    return _normalize_sqlite_db_value(os.getenv("SQLITE_DB", "myapp.db"))
 
 
 @contextmanager
@@ -43,9 +73,12 @@ def _connect() -> Iterator[sqlite3.Connection]:
 
     # Create parent directory if a path is provided (best effort).
     try:
-        Path(db_path).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
+        p = Path(db_path).expanduser()
+        # Only mkdir if there is a parent directory component.
+        if p.parent and str(p.parent) not in (".", ""):
+            p.resolve().parent.mkdir(parents=True, exist_ok=True)
     except Exception:
-        # Ignore: if db_path is just "myapp.db" relative path, parent is workspace dir.
+        # Best-effort only; sqlite will error if path is invalid.
         pass
 
     conn = sqlite3.connect(db_path, check_same_thread=False)

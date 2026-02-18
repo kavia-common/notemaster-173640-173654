@@ -12,6 +12,7 @@ CORS is configured to allow the React frontend (typically http://localhost:3000)
 
 from __future__ import annotations
 
+import os
 from typing import List, Optional
 
 from fastapi import FastAPI, HTTPException, Query, status
@@ -45,16 +46,34 @@ app = FastAPI(
     openapi_tags=openapi_tags,
 )
 
-# CORS: allow React dev server + same-origin deployments.
-# We keep this configurable via env var if needed later, but default allows localhost:3000.
+
+def _get_allowed_origins() -> List[str]:
+    """Compute allowed CORS origins from environment.
+
+    Returns:
+        A list of origins to allow. If empty, FastAPI/Starlette will treat it as
+        "no CORS allowed", so we always provide safe defaults for local dev.
+
+    Notes:
+        Preview manifests set ALLOWED_ORIGINS to a comma-separated list.
+    """
+    env_val = (os.getenv("ALLOWED_ORIGINS") or "").strip()
+    if env_val:
+        return [o.strip() for o in env_val.split(",") if o.strip()]
+
+    # Fallback for local development.
+    return ["http://localhost:3000", "http://127.0.0.1:3000"]
+
+
+allowed_origins = _get_allowed_origins()
+allow_origin_regex = os.getenv("ALLOWED_ORIGIN_REGEX")  # optional
+
+# CORS: allow the React frontend in preview and local development.
+# We do not use cookies, so allow_credentials stays False.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        # Also allow the hosted preview origin patterns by permissive wildcard if needed.
-        # NOTE: keep allow_origins explicit for credentialed requests; we are not using cookies here.
-    ],
+    allow_origins=allowed_origins,
+    allow_origin_regex=allow_origin_regex,
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
